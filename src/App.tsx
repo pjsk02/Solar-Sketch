@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useState } from 'react'
 
 type Point = { x: number; y: number }
 type PanelPolygon = { id: string; corners: Point[] }
@@ -118,17 +118,42 @@ function formatNumber(value: number, digits = 0) {
 }
 
 function useObjectUrl(file: File | null) {
-  const [url, setUrl] = useState('')
+  const url = useMemo(() => (file ? URL.createObjectURL(file) : ''), [file])
+
   useEffect(() => {
-    if (!file) {
-      setUrl('')
+    if (!url) {
       return
     }
-    const next = URL.createObjectURL(file)
-    setUrl(next)
-    return () => URL.revokeObjectURL(next)
-  }, [file])
+
+    return () => {
+      URL.revokeObjectURL(url)
+    }
+  }, [url])
+
   return url
+}
+
+function getEmptyLayout(angleDeg: number) {
+  return {
+    panels: [] as PanelPolygon[],
+    panelCount: 0,
+    kwDc: 0,
+    kwAc: 0,
+    annualKwh: 0,
+    angleDeg,
+  }
+}
+
+function getPointerPoint(
+  event: React.PointerEvent<SVGSVGElement>,
+  canvasWidth: number,
+  canvasHeight: number,
+) {
+  const rect = event.currentTarget.getBoundingClientRect()
+  return {
+    x: ((event.clientX - rect.left) / rect.width) * canvasWidth,
+    y: ((event.clientY - rect.top) / rect.height) * canvasHeight,
+  }
 }
 
 function getEdgeAngleDegrees(a: Point, b: Point) {
@@ -198,9 +223,9 @@ export default function App() {
     return getDominantPolygonAngle(installablePolygon)
   }, [installablePolygon])
 
-  const computeLayoutForAngle = (testAngleDeg: number) => {
+  const computeLayoutForAngle = useCallback((testAngleDeg: number) => {
     if (!installablePolygon.length || pxPerFoot <= 0) {
-      return { panels: [] as PanelPolygon[], panelCount: 0, kwDc: 0, kwAc: 0, annualKwh: 0, angleDeg: testAngleDeg }
+      return getEmptyLayout(testAngleDeg)
     }
 
     const origin = centroid(installablePolygon)
@@ -208,7 +233,7 @@ export default function App() {
     const rotatedKeepouts = keepouts.map((poly) => rotatePolygon(poly, origin, -testAngleDeg))
     const bounds = getBounds(rotatedInstallable)
     if (!bounds) {
-      return { panels: [] as PanelPolygon[], panelCount: 0, kwDc: 0, kwAc: 0, annualKwh: 0, angleDeg: testAngleDeg }
+      return getEmptyLayout(testAngleDeg)
     }
 
     const panelW = panelWidthFt * pxPerFoot
@@ -260,11 +285,23 @@ export default function App() {
     const annualKwh = kwDc * specificYield
 
     return { panels, panelCount, kwDc, kwAc, annualKwh, angleDeg: testAngleDeg }
-  }
+  }, [
+    dcAcRatio,
+    installablePolygon,
+    keepouts,
+    moduleGapFt,
+    panelLengthFt,
+    panelWatts,
+    panelWidthFt,
+    pxPerFoot,
+    rowGapFt,
+    setbackFt,
+    specificYield,
+  ])
 
   const layout = useMemo(() => {
     if (!installablePolygon.length || pxPerFoot <= 0) {
-      return { panels: [] as PanelPolygon[], panelCount: 0, kwDc: 0, kwAc: 0, annualKwh: 0, angleDeg: 0 }
+      return getEmptyLayout(0)
     }
 
     if (orientationMode === 'manual') {
@@ -276,19 +313,11 @@ export default function App() {
     return roofPerpendicular.panelCount > roofAligned.panelCount ? roofPerpendicular : roofAligned
   }, [
     installablePolygon,
-    keepouts,
     pxPerFoot,
     orientationMode,
     orientationDeg,
     roofAngleDeg,
-    panelLengthFt,
-    panelWidthFt,
-    rowGapFt,
-    moduleGapFt,
-    setbackFt,
-    panelWatts,
-    specificYield,
-    dcAcRatio,
+    computeLayoutForAngle,
   ])
 
   const installableAreaSqFt = useMemo(() => {
@@ -302,24 +331,16 @@ export default function App() {
   }, [keepouts, pxPerFoot])
 
   const onPointerDown = (event: React.PointerEvent<SVGSVGElement>) => {
-    const rect = event.currentTarget.getBoundingClientRect()
-    const point = {
-      x: ((event.clientX - rect.left) / rect.width) * canvasWidth,
-      y: ((event.clientY - rect.top) / rect.height) * canvasHeight,
-    }
-    try {
+    const point = getPointerPoint(event, canvasWidth, canvasHeight)
+    if ('setPointerCapture' in event.currentTarget) {
       event.currentTarget.setPointerCapture(event.pointerId)
-    } catch {}
+    }
     setDrawState({ active: true, points: [point] })
   }
 
   const onPointerMove = (event: React.PointerEvent<SVGSVGElement>) => {
     if (!drawState.active) return
-    const rect = event.currentTarget.getBoundingClientRect()
-    const point = {
-      x: ((event.clientX - rect.left) / rect.width) * canvasWidth,
-      y: ((event.clientY - rect.top) / rect.height) * canvasHeight,
-    }
+    const point = getPointerPoint(event, canvasWidth, canvasHeight)
     setDrawState((prev) => {
       const last = prev.points[prev.points.length - 1]
       if (last && distance(last, point) < 3) return prev
